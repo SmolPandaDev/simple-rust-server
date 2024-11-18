@@ -10,11 +10,18 @@ type Job = Box<dyn FnOnce() + Send + 'static>;
 
 pub struct ThreadPool {
     workers: Vec<Worker>,
-    sender: mpsc::Sender<Job>,
+    sender: Option<mpsc::Sender<Job>>,
 
 }
 
 impl ThreadPool {
+    /// Create a new ThreadPool.
+    ///
+    /// The size is the number of threads in the pool.
+    ///
+    /// # Panics
+    ///
+    /// The `new` function will panic if the size is zero.
     pub fn new(size: usize) -> ThreadPool {
         assert!(size > 0);
 
@@ -33,7 +40,7 @@ impl ThreadPool {
             workers.push(Worker::new(id, Arc::clone(&receiver)));
         }
 
-        ThreadPool { workers, sender }
+        ThreadPool { workers, sender: Some(sender) }
     }
 
     pub fn execute<F>(&self, f: F)
@@ -45,7 +52,7 @@ impl ThreadPool {
         // send the job down the sending end of the channel for workers to pick up
         // we have to call unwrap() because if we stopped the receiving threads then send could fail
         // our threads will continue executing as long as thread pool exists so this is safe
-        self.sender.send(job).unwrap();
+        self.sender.as_ref().unwrap().send(job).unwrap();
     }
     
 }
@@ -53,18 +60,27 @@ impl ThreadPool {
 // When the pool is dropped we want all the threads to finish their work
 impl Drop for ThreadPool {
     fn drop(&mut self) {
+
+        // We have to drop the sender to close the channel otherwise our threads will loop forever searching for jobs
+        drop(self.sender.take());
+
         // we use &mut here because self is a mutable reference and we need to mutate the worker.
         for worker in &mut self.workers {
             println!("Shutting down worker {}", worker.id);
 
-            worker.thread.join().unwrap();
+            // the `take` method on Option takes the Some variant out and leaves None in its place
+            if let Some(thread) = worker.thread.take() {
+                // join takes ownership of it's argument
+                thread.join().unwrap();
+            }
+
         }
     }
 }
 
 struct Worker {
     id: usize,
-    thread: thread::JoinHandle<()>,
+    thread: Option<thread::JoinHandle<()>>,
 }
 
 impl Worker {
@@ -75,13 +91,20 @@ impl Worker {
             // which can happen if another thread panicked whilst holding the lock rather than releasing the lock.
 
             // We unwrap() after recv() to panic if the sender closed down and thus we couldn't receive the job.
-            let job = receiver.lock().unwrap().recv().unwrap();
+            let message = receiver.lock().unwrap().recv();
+            match message {
+                Ok(job) => {
+                    println!("Worker {id} got a job; executing.");
 
-            println!("Worker {id} got a job; executing.");
-
-            job();
+                    job();
+                }
+                Err(_) => {
+                    println!("Worker {id} disconnected; shutting down.");
+                    break;
+                }
+            }
         });
 
-        Worker { id, thread }
+        Worker { id, thread: Some(thread) }
     }
 }

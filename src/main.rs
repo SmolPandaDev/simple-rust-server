@@ -10,13 +10,17 @@ fn main() {
     let listener = TcpListener::bind("127.0.0.1:7878").unwrap();
     let pool = ThreadPool::new(4);
 
-    for stream in listener.incoming() {
+    // take 2 requests then shutdown
+    // it will shudown because end of main() is reached, meaning the pool goes out of scope and the `drop` implementation will run
+    for stream in listener.incoming().take(2) {
         let stream = stream.unwrap();
 
         pool.execute(|| {
             handle_connection(stream);
         });
     }
+
+    println!("Shutting down server...");
 }
 
 fn handle_connection(mut stream: TcpStream) {
