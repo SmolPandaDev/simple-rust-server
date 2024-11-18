@@ -50,6 +50,18 @@ impl ThreadPool {
     
 }
 
+// When the pool is dropped we want all the threads to finish their work
+impl Drop for ThreadPool {
+    fn drop(&mut self) {
+        // we use &mut here because self is a mutable reference and we need to mutate the worker.
+        for worker in &mut self.workers {
+            println!("Shutting down worker {}", worker.id);
+
+            worker.thread.join().unwrap();
+        }
+    }
+}
+
 struct Worker {
     id: usize,
     thread: thread::JoinHandle<()>,
